@@ -5,7 +5,8 @@ import urequests
 import ssd1306
 from sprites import (
     PET_W, PET_H, MOOD_FRAMES,
-    MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING
+    MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING,
+    ICON_W, ICON_H, HOUSE_ICON, SUN_ICON
 )
 
 # ========== CONFIGURATION ==========
@@ -193,8 +194,8 @@ boot_button = Pin(0, Pin.IN, Pin.PULL_UP)
 MOOD_CYCLE = [MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING]
 
 # Sensor calibration (adjust based on known accurate readings)
-TEMP_OFFSET_C = -4  # Temperature offset in Celsius
-HUMIDITY_OFFSET = 10  # Humidity offset in % (33% → 43%)
+TEMP_OFFSET_C = -3  # Temperature offset in Celsius
+HUMIDITY_OFFSET = 7  # Humidity offset in % (33% → 43%)
 
 
 def c_to_f(celsius):
@@ -293,6 +294,12 @@ def render():
     show_rain = (weather_condition and weather_condition in ("Rain", "Drizzle", "Thunderstorm")) or manual_rain_mode
     if show_rain:
         draw_rain_overlay()
+    
+    # Weather icons (32x32) above temperatures
+    # House icon for indoor (left side)
+    blit_bitmap(HOUSE_ICON, ICON_W, ICON_H, 0, 10, 1)
+    # Sun icon for outdoor (right side)
+    blit_bitmap(SUN_ICON, ICON_W, ICON_H, 96, 10, 1)
     
     # Left side: Indoor temp and humidity
     if indoor_temp_c is not None:
