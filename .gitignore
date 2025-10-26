@@ -1,0 +1,26 @@
+# Sensitive configuration file with passwords and API keys
+config.py
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# MicroPython bytecode
+*.mpy
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
+

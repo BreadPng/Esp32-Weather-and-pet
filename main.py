@@ -1,4 +1,4 @@
-from machine import Pin, I2C
+from machine import Pin, I2C, RTC
 import time
 import network
 import urequests
@@ -8,39 +8,37 @@ from sprites import (
     MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING,
     ICON_W, ICON_H, HOUSE_ICON, SUN_ICON
 )
+# Import sensitive configuration from separate file
+from config import (
+    WIFI_SSID, WIFI_PASSWORD,
+    OPENWEATHER_API_KEY, OPENWEATHER_LAT, OPENWEATHER_LON,
+    TIMEZONE_OFFSET
+)
 
 # ========== CONFIGURATION ==========
-# WiFi credentials (CHANGE THESE)
-WIFI_SSID = "ENTER-FIBER"
-WIFI_PASSWORD = "Promithius@1234"
-
-# OpenWeather API (get free key at https://openweathermap.org/api)
-OPENWEATHER_API_KEY = "13af96cc1328169791fc5ac26a45001f"
-OPENWEATHER_LAT = 33.14031
-OPENWEATHER_LON = -111.61903
 
 # I2C pins
 I2C_SDA = 21
 I2C_SCL = 22
 
 # Timing
-FRAME_TIME = 500  # ms per animation frame
+FRAME_TIME = 800  # ms per animation frame
 MOOD_CHANGE_INTERVAL = 5 * 60 * 1000  # 5 minutes in ms
 WEATHER_UPDATE_INTERVAL = 10 * 60 * 1000  # 10 minutes in ms
 
 # ========== HARDWARE SETUP ==========
-i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=100000)
+i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=400000)
 
 # Scan I2C bus to verify devices
 print("I2C scan:", [hex(addr) for addr in i2c.scan()])
 
-time.sleep_ms(100)  # Let I2C settle
+time.sleep_ms(25)  # Let I2C settle
 oled = ssd1306.SSD1306_I2C(128, 64, i2c, addr=0x3c)
 
 
 # ========== HTU21D SENSOR ==========
 class HTU21D:
-    """Simple HTU21D temperature/humidity sensor driver"""
+    """HTU21D temperature/humidity sensor driver with proper bit masking"""
     def __init__(self, i2c, addr=0x40):
         self.i2c = i2c
         self.addr = addr
@@ -48,18 +46,20 @@ class HTU21D:
     def read_temperature(self):
         """Return temperature in Celsius"""
         self.i2c.writeto(self.addr, b'\xF3')  # Trigger temp measurement (no hold)
-        time.sleep_ms(50)
+        time.sleep_ms(50)  # Wait for measurement (max 50ms at 14-bit resolution)
         data = self.i2c.readfrom(self.addr, 3)
-        raw = (data[0] << 8) | data[1]
+        # Mask out status bits (2 LSBs) before calculation
+        raw = (data[0] << 8) | (data[1] & 0xFC)
         temp_c = -46.85 + (175.72 * raw / 65536.0)
         return temp_c
     
     def read_humidity(self):
         """Return relative humidity %"""
         self.i2c.writeto(self.addr, b'\xF5')  # Trigger humidity measurement
-        time.sleep_ms(50)
+        time.sleep_ms(16)  # Wait for measurement (max 16ms at 12-bit resolution)
         data = self.i2c.readfrom(self.addr, 3)
-        raw = (data[0] << 8) | data[1]
+        # Mask out status bits (2 LSBs) before calculation
+        raw = (data[0] << 8) | (data[1] & 0xFC)
         rh = -6.0 + (125.0 * raw / 65536.0)
         return max(0, min(100, rh))
 
@@ -97,6 +97,18 @@ def connect_wifi():
             return False
     except Exception as e:
         print("WiFi error:", e)
+        return False
+
+
+def sync_time_ntp():
+    """Sync time with NTP server (requires WiFi)"""
+    try:
+        import ntptime
+        ntptime.settime()
+        print("Time synced via NTP")
+        return True
+    except Exception as e:
+        print("NTP sync failed:", e)
         return False
 
 
@@ -182,7 +194,7 @@ indoor_temp_c = None
 indoor_humidity = None
 outdoor_temp_c = None
 outdoor_humidity = None
-weather_condition = None  # e.g., "Rain", "Clear", "Clouds"
+weather_condition = None  # "Rain" or "Clear"
 manual_rain_mode = False  # Toggle rain overlay manually with button
 last_mood_change = 0
 last_weather_update = 0
@@ -194,8 +206,8 @@ boot_button = Pin(0, Pin.IN, Pin.PULL_UP)
 MOOD_CYCLE = [MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING]
 
 # Sensor calibration (adjust based on known accurate readings)
-TEMP_OFFSET_C = -3  # Temperature offset in Celsius
-HUMIDITY_OFFSET = 7  # Humidity offset in % (33% → 43%)
+TEMP_OFFSET_C = 0  # Temperature offset in Celsius
+HUMIDITY_OFFSET = 0 
 
 
 def c_to_f(celsius):
@@ -203,6 +215,41 @@ def c_to_f(celsius):
     if celsius is None:
         return None
     return celsius * 9.0 / 5.0 + 32.0
+
+
+def get_time_string(show_colon=True):
+    """Get current time as formatted string with optional blinking colon.
+    Returns: (time_string, period_string) e.g., ("9:45" or "9 45", "AM")
+    """
+    try:
+        # Get current UTC time and apply timezone offset
+        utc_seconds = time.time()
+        local_seconds = utc_seconds + (TIMEZONE_OFFSET * 3600)
+        t = time.localtime(local_seconds)
+        
+        hour = t[3]  # 0-23
+        minute = t[4]
+        # Convert to 12-hour format
+        if hour == 0:
+            hour_12 = 12
+            period = "AM"
+        elif hour < 12:
+            hour_12 = hour
+            period = "AM"
+        elif hour == 12:
+            hour_12 = 12
+            period = "PM"
+        else:
+            hour_12 = hour - 12
+            period = "PM"
+        
+        # Use colon or space for blinking effect
+        separator = ":" if show_colon else " "
+        time_str = "%d%s%02d" % (hour_12, separator, minute)
+        return time_str, period
+    except Exception as e:
+        print("Time format error:", e)
+        return "--:--", ""
 
 
 def update_sensors():
@@ -221,7 +268,7 @@ def update_sensors():
 
 
 def update_weather():
-    """Fetch outdoor temp, humidity, and condition from OpenWeather (safe, never crashes)"""
+    """Fetch outdoor temp, humidity, and condition from OpenWeather"""
     global outdoor_temp_c, outdoor_humidity, weather_condition, last_weather_update
     try:
         outdoor_temp_c, outdoor_humidity, weather_condition = fetch_outdoor_weather()
@@ -234,7 +281,7 @@ def update_weather():
 
 
 def change_mood():
-    """Change pet mood with 50% chance (automatic timer)"""
+    """Change pet mood with 50% chance"""
     global current_mood
     import random
     # 50% chance to actually change mood
@@ -270,11 +317,11 @@ def cycle_mood_manual():
 def draw_rain_overlay():
     """Draw simple rain overlay (diagonal lines)"""
     import random
-    for _ in range(15):  # 15 random raindrops
+    for _ in range(19):  # 19 random raindrops
         x = random.randint(0, 127)
         y = random.randint(0, 63)
         # Small diagonal line
-        for i in range(3):
+        for i in range(4):
             px, py = x + i, y + i
             if 0 <= px < 128 and 0 <= py < 64:
                 oled.pixel(px, py, 1)
@@ -284,7 +331,26 @@ def render():
     """Draw the full screen: pet + temps/humidity + weather overlay"""
     oled.fill(0)
     
-    # Pet sprite (centered horizontally, top half of screen)
+    # Time display in upper left corner with blinking colon
+    # Blink based on current second (on for even seconds, off for odd)
+    try:
+        # Apply timezone offset for proper local time display
+        utc_seconds = time.time()
+        local_seconds = utc_seconds + (TIMEZONE_OFFSET * 3600)
+        second = time.localtime(local_seconds)[5]
+        show_colon = (second % 2) == 0
+    except:
+        show_colon = True
+    
+    time_str, period = get_time_string(show_colon)
+    oled.text(time_str, 0, 0, 1)
+    
+    # AM/PM in upper right corner
+    if period:
+        # Right-align: 128 pixels wide, each char is 8 pixels, "AM"/"PM" is 2 chars = 16 pixels + 1 spacing
+        oled.text(period, (128 - 18), 0, 1)
+    
+    # Pet sprite centered
     pet_x = (128 - PET_W) // 2
     pet_y = 0
     frames = MOOD_FRAMES[current_mood]
@@ -333,7 +399,8 @@ def main():
     global frame_idx, last_mood_change, last_weather_update
     
     oled.fill(0)
-    oled.text("Pet Starting...", 16, 24)
+    oled.text("Tomogatchi", (64 - (10*4)), 24)          #center align (text, (screen half width - (Characters * 8 pixels per Char / 2 to center), y )
+    oled.text("Starting!", (64 - (9*4)) , (24 + 8 + 1))
     oled.show()
     
     # Connect WiFi
@@ -342,10 +409,12 @@ def main():
     oled.fill(0)
     if wifi_ok:
         oled.text("WiFi OK", 32, 24)
+        # Sync time via NTP
+        sync_time_ntp()
     else:
         oled.text("WiFi Failed", 16, 24)
     oled.show()
-    time.sleep(2)
+    #time.sleep(500)
     
     # Initial sensor read and weather fetch
     update_sensors()
@@ -360,10 +429,10 @@ def main():
         while True:
             now = time.ticks_ms()
             
-            # Update sensors every loop (fast)
+            
             update_sensors()
             
-            # Change mood every 15 minutes
+            # Change mood every X minutes
             if time.ticks_diff(now, last_mood_change) >= MOOD_CHANGE_INTERVAL:
                 change_mood()
                 last_mood_change = now
@@ -377,10 +446,10 @@ def main():
                 frame_idx = (frame_idx + 1) % 2  # all moods have 2 frames
                 last_frame_sw = now
             
-            # Check boot button (GPIO0) - cycle through moods in order
+            # Check button - cycle through moods in order
             if boot_button.value() == 0:  # Button pressed (active low)
-                time.sleep_ms(200)  # Debounce
-                if boot_button.value() == 0:  # Still pressed
+                time.sleep_ms(50)  # Debounce
+                if boot_button.value() == 0:  
                     cycle_mood_manual()
                     while boot_button.value() == 0:  # Wait for release
                         time.sleep_ms(50)
@@ -388,13 +457,11 @@ def main():
             # Render
             render()
             
-            # Power optimization: longer sleep between frames reduces heat
-            # ESP32 will idle at lower power during sleep
-            time.sleep_ms(100)  # ~10 FPS (was 50ms = ~20 FPS)
+            
     
     except KeyboardInterrupt:
-        oled.fill(0)
-        oled.text("Stopped.", 32, 28)
+        oled.fill(1)
+        oled.text("Stopped.", 32, 28, 0)
         oled.show()
         print("Pet stopped by user.")
 

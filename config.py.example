@@ -1,0 +1,14 @@
+# WiFi Configuration
+WIFI_SSID = "your_wifi_name_here"
+WIFI_PASSWORD = "your_wifi_password_here"
+
+# OpenWeather API Configuration
+# Get your free API key at https://openweathermap.org/api
+OPENWEATHER_API_KEY = "your_api_key_here"
+OPENWEATHER_LAT = 0.0  # Your latitude
+OPENWEATHER_LON = 0.0  # Your longitude
+
+# Timezone Configuration
+# Hours offset from UTC 
+TIMEZONE_OFFSET = -7  # Your timezone offset from UTC
+

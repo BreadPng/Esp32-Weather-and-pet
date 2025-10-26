@@ -79,7 +79,7 @@ def main():
     print(f"Threshold: {threshold}")
     print("-" * 64)
     
-    ascii_art = image_to_ascii(image_path, target_size=(64, 64), threshold=threshold)
+    ascii_art = image_to_ascii(image_path, target_size=(32, 32), threshold=threshold)
     print(ascii_art)
     
     # Optional: Save to file
