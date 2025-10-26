@@ -365,7 +365,7 @@ def render():
     # House icon for indoor (left side)
     blit_bitmap(HOUSE_ICON, ICON_W, ICON_H, 0, 10, 1)
     # Sun icon for outdoor (right side)
-    blit_bitmap(SUN_ICON, ICON_W, ICON_H, 96, 10, 1)
+    blit_bitmap(SUN_ICON, ICON_W, ICON_H, 32+64-2, 10, 1)   #Have no idea why i need the minus 2px but the image gets cut off witout it...
     
     # Left side: Indoor temp and humidity
     if indoor_temp_c is not None:
