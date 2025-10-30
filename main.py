@@ -3,6 +3,9 @@ import time
 import network
 import urequests
 import ssd1306
+import _thread
+from rotary_encoder import RotaryEncoder, encoder_polling_loop
+from menu import Menu
 from sprites import (
     PET_W, PET_H, MOOD_FRAMES,
     MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING,
@@ -20,6 +23,16 @@ from config import (
 # I2C pins
 I2C_SDA = 21
 I2C_SCL = 22
+
+# Rotary encoder pins (GPIO numbers)
+# Use GPIO18/19 for A/B to avoid bootstrapping pins; button on GPIO23.
+ROTARY_PIN_A = 18
+ROTARY_PIN_B = 19
+ROTARY_BUTTON_PIN = 23
+
+# Menu timings (milliseconds)
+MENU_IDLE_TIMEOUT_MS = 6000
+ACTION_VIEW_DURATION_MS = 3000
 
 # Timing
 FRAME_TIME = 800  # ms per animation frame
@@ -199,11 +212,11 @@ manual_rain_mode = False  # Toggle rain overlay manually with button
 last_mood_change = 0
 last_weather_update = 0
 
-# Boot button (GPIO0) - safe to use as input when not holding during boot
-boot_button = Pin(0, Pin.IN, Pin.PULL_UP)
-
-# Mood cycle order for button
-MOOD_CYCLE = [MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING]
+STATE_PET = "pet"
+STATE_MENU = "menu"
+STATE_FEED = "feed"
+STATE_PLAY = "play"
+STATE_SETTINGS = "settings"
 
 # Sensor calibration (adjust based on known accurate readings)
 TEMP_OFFSET_C = 0  # Temperature offset in Celsius
@@ -293,27 +306,6 @@ def change_mood():
         print("Mood change skipped (50% chance)")
 
 
-def cycle_mood_manual():
-    """Cycle through moods in order via button press"""
-    global current_mood, manual_rain_mode
-    try:
-        current_idx = MOOD_CYCLE.index(current_mood)
-        next_idx = (current_idx + 1) % (len(MOOD_CYCLE) + 1)  # +1 for rain mode at end
-        if next_idx < len(MOOD_CYCLE):
-            current_mood = MOOD_CYCLE[next_idx]
-            manual_rain_mode = False
-            print("Button: Mood →", current_mood)
-        else:
-            # End of cycle: toggle rain mode and reset to first mood
-            manual_rain_mode = not manual_rain_mode
-            current_mood = MOOD_CYCLE[0]
-            print("Button: Rain mode →", manual_rain_mode)
-    except ValueError:
-        # Current mood not in cycle, reset
-        current_mood = MOOD_CYCLE[0]
-        manual_rain_mode = False
-
-
 def draw_rain_overlay():
     """Draw simple rain overlay (diagonal lines)"""
     import random
@@ -394,18 +386,78 @@ def render():
     oled.show()
 
 
+def _center_x(text):
+    return max(0, (128 - len(text) * 8) // 2)
+
+
+def render_menu_screen(menu):
+    oled.fill(0)
+    oled.text("Menu", _center_x("Menu"), 0, 1)
+    for idx, label in enumerate(menu.items):
+        y = 18 + idx * 16
+        if idx == menu.index:
+            oled.fill_rect(0, y - 2, 128, 12, 1)
+            oled.text(label, 8, y, 0)
+        else:
+            oled.text(label, 8, y, 1)
+    oled.text("Click to choose", 8, 56, 1)
+    oled.show()
+
+
+def render_action_screen(title, subtitle=None):
+    oled.fill(0)
+    oled.text(title, _center_x(title), 20, 1)
+    if subtitle:
+        oled.text(subtitle, _center_x(subtitle), 36, 1)
+    oled.text("Click to return", 8, 56, 1)
+    oled.show()
+
+
+def render_settings_screen(menu):
+    oled.fill(0)
+    oled.text("Settings", _center_x("Settings"), 0, 1)
+    for idx, item in enumerate(menu.items):
+        if item == "Rain Overlay":
+            label = "Rain: %s" % ("On" if manual_rain_mode else "Off")
+        else:
+            label = item
+        y = 18 + idx * 16
+        if idx == menu.index:
+            oled.fill_rect(0, y - 2, 128, 12, 1)
+            oled.text(label, 4, y, 0)
+        else:
+            oled.text(label, 4, y, 1)
+    oled.text("Click to select", 4, 56, 1)
+    oled.show()
+
+
+def handle_feed_action():
+    global current_mood, manual_rain_mode, last_mood_change, frame_idx
+    manual_rain_mode = False
+    current_mood = MOOD_HAPPY
+    frame_idx = 0
+    last_mood_change = time.ticks_ms()
+
+
+def handle_play_action():
+    global current_mood, last_mood_change, frame_idx
+    current_mood = MOOD_LOVE
+    frame_idx = 0
+    last_mood_change = time.ticks_ms()
+
+
 # ========== MAIN LOOP ==========
 def main():
-    global frame_idx, last_mood_change, last_weather_update
-    
+    global frame_idx, last_mood_change, last_weather_update, manual_rain_mode
+
     oled.fill(0)
-    oled.text("Tomogatchi", (64 - (10*4)), 24)          #center align (text, (screen half width - (Characters * 8 pixels per Char / 2 to center), y )
-    oled.text("Starting!", (64 - (9*4)) , (24 + 8 + 1))
+    oled.text("Tomogatchi", (64 - (10 * 4)), 24)
+    oled.text("Starting!", (64 - (9 * 4)), (24 + 8 + 1))
     oled.show()
-    
+
     # Connect WiFi
     wifi_ok = connect_wifi()
-    
+
     oled.fill(0)
     if wifi_ok:
         oled.text("WiFi OK", 32, 24)
@@ -414,51 +466,141 @@ def main():
     else:
         oled.text("WiFi Failed", 16, 24)
     oled.show()
-    #time.sleep(500)
-    
+
     # Initial sensor read and weather fetch
     update_sensors()
     if wifi_ok:
         update_weather()
+
+    encoder = RotaryEncoder(ROTARY_PIN_A, ROTARY_PIN_B, ROTARY_BUTTON_PIN)
     
-    last_frame_sw = time.ticks_ms()
-    last_mood_change = time.ticks_ms()
-    last_weather_update = time.ticks_ms()
+    # Start encoder polling on Core 0 for responsive input
+    # Default: 5000Hz (200us polling interval) - uses microsecond sleep
+    # Supports up to ~10kHz: _thread.start_new_thread(encoder_polling_loop, (encoder, 10000))
+    print("Starting encoder polling thread on Core 0...")
+    _thread.start_new_thread(encoder_polling_loop, (encoder,))
+    time.sleep_ms(100)  # Let thread start
     
+    main_menu = Menu(["Feed", "Play", "Settings"])
+    settings_menu = Menu(["Rain Overlay", "Back to Menu"])
+
+    now = time.ticks_ms()
+    last_frame_sw = now
+    last_mood_change = now
+    last_weather_update = now
+    current_state = STATE_PET
+    state_entered_at = now
+    menu_last_interaction = now
+
     try:
         while True:
             now = time.ticks_ms()
-            
-            
+
+            # Encoder is updated on Core 0 - just read the accumulated results
+            delta, clicked = encoder.read()
+
             update_sensors()
-            
+
             # Change mood every X minutes
             if time.ticks_diff(now, last_mood_change) >= MOOD_CHANGE_INTERVAL:
                 change_mood()
                 last_mood_change = now
-            
+
             # Update weather every 10 minutes
             if wifi_ok and time.ticks_diff(now, last_weather_update) >= WEATHER_UPDATE_INTERVAL:
                 update_weather()
-            
+                last_weather_update = now
+
             # Advance animation frame
             if time.ticks_diff(now, last_frame_sw) >= FRAME_TIME:
                 frame_idx = (frame_idx + 1) % 2  # all moods have 2 frames
                 last_frame_sw = now
+
+            if current_state == STATE_PET:
+                if delta or clicked:
+                    current_state = STATE_MENU
+                    state_entered_at = now
+                    menu_last_interaction = now
+                    delta = 0
+                    clicked = False
+
+            if current_state == STATE_MENU:
+                if delta:
+                    main_menu.move(delta)
+                    menu_last_interaction = now
+                if clicked:
+                    selection = main_menu.selected()
+                    menu_last_interaction = now
+                    if selection == "Feed":
+                        handle_feed_action()
+                        current_state = STATE_FEED
+                        state_entered_at = now
+                        clicked = False
+                    elif selection == "Play":
+                        handle_play_action()
+                        current_state = STATE_PLAY
+                        state_entered_at = now
+                        clicked = False
+                    elif selection == "Settings":
+                        settings_menu.reset()
+                        current_state = STATE_SETTINGS
+                        state_entered_at = now
+                        menu_last_interaction = now
+                        clicked = False
+                if time.ticks_diff(now, menu_last_interaction) >= MENU_IDLE_TIMEOUT_MS:
+                    current_state = STATE_PET
+                    state_entered_at = now
+
+            elif current_state == STATE_FEED:
+                if clicked:
+                    current_state = STATE_PET
+                    state_entered_at = now
+                    clicked = False
+                elif time.ticks_diff(now, state_entered_at) >= ACTION_VIEW_DURATION_MS:
+                    current_state = STATE_PET
+                    state_entered_at = now
+
+            elif current_state == STATE_PLAY:
+                if clicked:
+                    current_state = STATE_PET
+                    state_entered_at = now
+                    clicked = False
+                elif time.ticks_diff(now, state_entered_at) >= ACTION_VIEW_DURATION_MS:
+                    current_state = STATE_PET
+                    state_entered_at = now
+
+            elif current_state == STATE_SETTINGS:
+                if delta:
+                    settings_menu.move(delta)
+                    menu_last_interaction = now
+                if clicked:
+                    selection = settings_menu.selected()
+                    menu_last_interaction = now
+                    if selection == "Rain Overlay":
+                        manual_rain_mode = not manual_rain_mode
+                        clicked = False
+                    elif selection == "Back to Menu":
+                        current_state = STATE_MENU
+                        state_entered_at = now
+                        clicked = False
+                if time.ticks_diff(now, menu_last_interaction) >= MENU_IDLE_TIMEOUT_MS:
+                    current_state = STATE_PET
+                    state_entered_at = now
+
+            if current_state == STATE_PET:
+                render()
+            elif current_state == STATE_MENU:
+                render_menu_screen(main_menu)
+            elif current_state == STATE_FEED:
+                render_action_screen("Feed", "Feeding pet!")
+            elif current_state == STATE_PLAY:
+                render_action_screen("Play", "Play time!")
+            elif current_state == STATE_SETTINGS:
+                render_settings_screen(settings_menu)
             
-            # Check button - cycle through moods in order
-            if boot_button.value() == 0:  # Button pressed (active low)
-                time.sleep_ms(50)  # Debounce
-                if boot_button.value() == 0:  
-                    cycle_mood_manual()
-                    while boot_button.value() == 0:  # Wait for release
-                        time.sleep_ms(50)
-            
-            # Render
-            render()
-            
-            
-    
+            # Small delay to prevent main loop from hogging CPU
+            time.sleep_ms(10)
+
     except KeyboardInterrupt:
         oled.fill(1)
         oled.text("Stopped.", 32, 28, 0)

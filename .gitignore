@@ -11,6 +11,8 @@ __pycache__/
 
 # IDE / Editor files
 .vscode/
+.cursor
+worktrees.json
 .idea/
 *.swp
 *.swo
