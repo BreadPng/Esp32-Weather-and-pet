@@ -13,7 +13,7 @@ class RotaryEncoder:
         pin_a_id,
         pin_b_id,
         button_pin_id,
-        step_debounce_ms=20,
+        step_debounce_ms=5,
         button_debounce_ms=35,
     ):
         self.pin_a = Pin(pin_a_id, Pin.IN, Pin.PULL_UP)
@@ -92,13 +92,22 @@ class RotaryEncoder:
                     self._button_press_time = None
 
     def read(self):
-        """Return accumulated (delta_steps, button_clicked) since last read."""
+        """Return accumulated (delta_steps, button_clicked) since last read.
+        Delta is capped to ±1 to prevent rapid scrolling.
+        """
         self._lock.acquire()
         delta = self._rotation_delta
         clicked = self._button_clicked
         self._rotation_delta = 0
         self._button_clicked = False
         self._lock.release()
+        
+        # Cap delta to ±1 to prevent rapid scrolling
+        if delta > 1:
+            delta = 1
+        elif delta < -1:
+            delta = -1
+        
         return delta, clicked
 
     def reset(self):
@@ -123,9 +132,11 @@ def encoder_polling_loop(encoder, poll_frequency_hz=1000):
         poll_frequency_hz: Polling frequency in Hz (default 5000Hz = 200us interval)
                           Supports up to ~10kHz reliably with microsecond sleep
     """
-    poll_interval_us = 1000000 / poll_frequency_hz
+    #poll_interval_us = int(1000000 / poll_frequency_hz)
+    poll_interval_us = int(1000 / poll_frequency_hz)
     print("Encoder polling thread started - %dHz (%dus interval)" % (poll_frequency_hz, poll_interval_us))
     while True:
         encoder.update()
-        time.sleep_us(poll_interval_us)
+        #time.sleep_us(poll_interval_us)
+        time.sleep_ms(poll_interval_us)
 

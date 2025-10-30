@@ -40,7 +40,7 @@ MOOD_CHANGE_INTERVAL = 5 * 60 * 1000  # 5 minutes in ms
 WEATHER_UPDATE_INTERVAL = 10 * 60 * 1000  # 10 minutes in ms
 
 # ========== HARDWARE SETUP ==========
-i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=400000)
+i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=700000)
 
 # Scan I2C bus to verify devices
 print("I2C scan:", [hex(addr) for addr in i2c.scan()])
@@ -498,6 +498,13 @@ def main():
 
             # Encoder is updated on Core 0 - just read the accumulated results
             delta, clicked = encoder.read()
+            
+            # Log encoder direction
+            if delta != 0:
+                direction = "CW" if delta > 0 else "CCW"
+                print("Encoder: %s (delta=%d)" % (direction, delta))
+            if clicked:
+                print("Encoder: Button clicked")
 
             update_sensors()
 
@@ -599,7 +606,7 @@ def main():
                 render_settings_screen(settings_menu)
             
             # Small delay to prevent main loop from hogging CPU
-            time.sleep_ms(10)
+            time.sleep_ms(5)
 
     except KeyboardInterrupt:
         oled.fill(1)
