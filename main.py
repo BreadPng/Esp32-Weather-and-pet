@@ -47,7 +47,7 @@ MOOD_CHANGE_INTERVAL = 5 * 60 * 1000  # 5 minutes in ms
 WEATHER_UPDATE_INTERVAL = 10 * 60 * 1000  # 10 minutes in ms
 
 # ========== HARDWARE SETUP ==========
-i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=1_000_000)
+i2c = I2C(0, scl=Pin(I2C_SCL), sda=Pin(I2C_SDA), freq=800_000)
 
 # Scan I2C bus to verify devices
 print("I2C scan:", [hex(addr) for addr in i2c.scan()])

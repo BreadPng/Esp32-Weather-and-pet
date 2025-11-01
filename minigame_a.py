@@ -45,7 +45,10 @@ def main_loop(oled, encoder):
             encoder.reset()
         
         # FLASH! - Fill screen white for one frame
+        
         oled.fill(1)
+        oled.show()
+        oled.fill(0)
         oled.show()
         
         # Start timing immediately after flash
