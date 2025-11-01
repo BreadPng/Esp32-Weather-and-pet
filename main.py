@@ -36,6 +36,9 @@ ACTION_VIEW_DURATION_MS = 3000
 
 # Timing
 FRAME_TIME = 800  # ms per animation frame
+TARGET_FPS = 15  # Display refresh target
+RENDER_INTERVAL_MS = (1000 + TARGET_FPS - 1) // TARGET_FPS  # Ceiling division to cap FPS
+SENSOR_UPDATE_INTERVAL_MS = 2000  # How often to refresh indoor sensor readings
 MOOD_CHANGE_INTERVAL = 5 * 60 * 1000  # 5 minutes in ms
 WEATHER_UPDATE_INTERVAL = 10 * 60 * 1000  # 10 minutes in ms
 
@@ -488,6 +491,8 @@ def main():
     last_frame_sw = now
     last_mood_change = now
     last_weather_update = now
+    last_render = now
+    last_sensor_update = now
     current_state = STATE_PET
     state_entered_at = now
     menu_last_interaction = now
@@ -506,7 +511,9 @@ def main():
             if clicked:
                 print("Encoder: Button clicked")
 
-            update_sensors()
+            if time.ticks_diff(now, last_sensor_update) >= SENSOR_UPDATE_INTERVAL_MS:
+                update_sensors()
+                last_sensor_update = now
 
             # Change mood every X minutes
             if time.ticks_diff(now, last_mood_change) >= MOOD_CHANGE_INTERVAL:
@@ -594,19 +601,18 @@ def main():
                     current_state = STATE_PET
                     state_entered_at = now
 
-            if current_state == STATE_PET:
-                render()
-            elif current_state == STATE_MENU:
-                render_menu_screen(main_menu)
-            elif current_state == STATE_FEED:
-                render_action_screen("Feed", "Feeding pet!")
-            elif current_state == STATE_PLAY:
-                render_action_screen("Play", "Play time!")
-            elif current_state == STATE_SETTINGS:
-                render_settings_screen(settings_menu)
-            
-            # Small delay to prevent main loop from hogging CPU
-            time.sleep_ms(5)
+            if time.ticks_diff(now, last_render) >= RENDER_INTERVAL_MS:
+                if current_state == STATE_PET:
+                    render()
+                elif current_state == STATE_MENU:
+                    render_menu_screen(main_menu)
+                elif current_state == STATE_FEED:
+                    render_action_screen("Feed", "Feeding pet!")
+                elif current_state == STATE_PLAY:
+                    render_action_screen("Play", "Play time!")
+                elif current_state == STATE_SETTINGS:
+                    render_settings_screen(settings_menu)
+                last_render = now
 
     except KeyboardInterrupt:
         oled.fill(1)

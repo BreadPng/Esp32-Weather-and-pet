@@ -13,8 +13,9 @@ class RotaryEncoder:
         pin_a_id,
         pin_b_id,
         button_pin_id,
-        step_debounce_ms=5,
+        step_debounce_ms=0,
         button_debounce_ms=35,
+        delta_cap=1,
     ):
         self.pin_a = Pin(pin_a_id, Pin.IN, Pin.PULL_UP)
         self.pin_b = Pin(pin_b_id, Pin.IN, Pin.PULL_UP)
@@ -22,6 +23,7 @@ class RotaryEncoder:
 
         self._step_debounce_ms = step_debounce_ms
         self._button_debounce_ms = button_debounce_ms
+        self._delta_cap = delta_cap
 
         # Track full encoder state (both A and B pins)
         self._last_encoded = (self.pin_a.value() << 1) | self.pin_b.value()
@@ -35,16 +37,18 @@ class RotaryEncoder:
         # Gray code state transition lookup table
         # Format: [last_state << 2 | current_state] = direction
         # Valid transitions: 0=no change, 1=CW, -1=CCW
+        # NOTE: Direction swapped - was backwards for this encoder
         self._transition_table = [
-            0, -1,  1,  0,   # from 00: 00->00(0), 00->01(-1), 00->10(1), 00->11(0-invalid)
-            1,  0,  0, -1,   # from 01: 01->00(1), 01->01(0), 01->10(0-invalid), 01->11(-1)
-           -1,  0,  0,  1,   # from 10: 10->00(-1), 10->01(0-invalid), 10->10(0), 10->11(1)
-            0,  1, -1,  0    # from 11: 11->00(0-invalid), 11->01(1), 11->10(-1), 11->11(0)
+            0,  1, -1,  0,   # from 00: 00->00(0), 00->01(1-CW), 00->10(-1-CCW), 00->11(0-invalid)
+           -1,  0,  0,  1,   # from 01: 01->00(-1-CCW), 01->01(0), 01->10(0-invalid), 01->11(1-CW)
+            1,  0,  0, -1,   # from 10: 10->00(1-CW), 10->01(0-invalid), 10->10(0), 10->11(-1-CCW)
+            0, -1,  1,  0    # from 11: 11->00(0-invalid), 11->01(-1-CCW), 11->10(1-CW), 11->11(0)
         ]
 
         # Thread-safe shared state
         self._lock = _thread.allocate_lock()
         self._rotation_delta = 0
+        self._transition_count = 0  # Count transitions for 4:1 ratio
         self._button_clicked = False
 
     def update(self):
@@ -68,9 +72,21 @@ class RotaryEncoder:
                 
                 # Only acquire lock if we have a valid rotation to record
                 if direction != 0:  # Valid transition
-                    self._lock.acquire()
-                    self._rotation_delta += direction
-                    self._lock.release()
+                    # Accumulate 4 transitions before reporting 1 step
+                    self._transition_count += direction
+                    
+                    # Every 4 transitions in same direction = 1 step
+                    if self._transition_count >= 4:
+                        self._lock.acquire()
+                        self._rotation_delta += 1
+                        self._lock.release()
+                        self._transition_count = 0
+                    elif self._transition_count <= -4:
+                        self._lock.acquire()
+                        self._rotation_delta -= 1
+                        self._lock.release()
+                        self._transition_count = 0
+                    
                     self._last_step_time = now
                 
                 self._last_encoded = current_encoded  # Update state after debounce
@@ -84,11 +100,13 @@ class RotaryEncoder:
                 self._last_button = current_button  # Update after debounce
                 if current_button == 0:  # Button pressed (active low)
                     self._button_press_time = now
+                    print("Encoder button: pressed")
                 else:  # Button released
                     if self._button_press_time is not None:
                         self._lock.acquire()
                         self._button_clicked = True
                         self._lock.release()
+                        print("Encoder button: released -> click registered")
                     self._button_press_time = None
 
     def read(self):
@@ -102,11 +120,11 @@ class RotaryEncoder:
         self._button_clicked = False
         self._lock.release()
         
-        # Cap delta to ±1 to prevent rapid scrolling
-        if delta > 1:
-            delta = 1
-        elif delta < -1:
-            delta = -1
+        # Cap delta to prevent rapid scrolling
+        if delta > self._delta_cap:
+            delta = self._delta_cap
+        elif delta < -self._delta_cap:
+            delta = -self._delta_cap
         
         return delta, clicked
 
@@ -116,6 +134,7 @@ class RotaryEncoder:
         self._rotation_delta = 0
         self._button_clicked = False
         self._lock.release()
+        self._transition_count = 0
         self._last_encoded = (self.pin_a.value() << 1) | self.pin_b.value()
         self._last_button = self.button.value()
         now = time.ticks_ms()
