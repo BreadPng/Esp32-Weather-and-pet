@@ -4,7 +4,6 @@ Upload files to ESP32 running MicroPython.
 
 This script uploads all necessary Python files to the ESP32 device.
 It tries mpremote first (recommended), then falls back to ampy if available.
-After successful upload, it automatically restarts the ESP32.
 
 Usage:
     python upload_to_esp32.py [port] [options]
@@ -13,8 +12,8 @@ Examples:
     python upload_to_esp32.py
     python upload_to_esp32.py /dev/cu.usbserial-0001
     python upload_to_esp32.py COM3
-    python upload_to_esp32.py --no-restart  # Skip automatic restart
     python upload_to_esp32.py --skip-config  # Skip config.py upload
+    python upload_to_esp32.py --check-storage  # Check storage after upload
     python upload_to_esp32.py --monitor  # View device logs after upload
     python upload_to_esp32.py --monitor --monitor-duration 30  # Monitor for 30 seconds
 """
@@ -199,70 +198,46 @@ def monitor_serial(port, duration=None):
     return True
 
 
-def restart_esp32(port, use_mpremote=True):
-    """Restart the ESP32 device."""
-    print("\n🔄 Restarting ESP32...", end=" ", flush=True)
+def check_storage(port):
+    """Check ESP32 filesystem storage usage."""
+    print("\n💾 Checking storage...", end=" ", flush=True)
     
     try:
-        if use_mpremote and check_command("mpremote"):
-            # Use mpremote soft-reset (preserves filesystem, faster)
+        if check_command("mpremote"):
+            # Execute Python code on device to get filesystem stats
             result = subprocess.run(
-                ["mpremote", "connect", port, "soft-reset"],
+                ["mpremote", "connect", port, "exec",
+                 "import os; s=os.statvfs('/'); b=s[0]; t=s[2]*b; f=s[3]*b; u=t-f; print(f'{u},{f},{t}')"],
                 capture_output=True,
                 text=True,
                 timeout=10
             )
+            
             if result.returncode == 0:
-                print("✓")
-                return True
-            else:
-                # Try hard reset if soft-reset fails
-                result = subprocess.run(
-                    ["mpremote", "connect", port, "reset"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    print("✓ (hard reset)")
+                output = result.stdout.strip()
+                # Parse the output: used,free,total
+                try:
+                    used, free, total = map(int, output.split(','))
+                    used_mb = used / (1024 * 1024)
+                    free_mb = free / (1024 * 1024)
+                    total_mb = total / (1024 * 1024)
+                    used_percent = (used / total * 100) if total > 0 else 0
+                    
+                    print("✓")
+                    print(f"   Used:  {used_mb:.2f} MB / {total_mb:.2f} MB ({used_percent:.1f}%)")
+                    print(f"   Free:  {free_mb:.2f} MB")
                     return True
-        
-        # Fallback: try to use serial connection to send reset
-        # This is a last resort if mpremote isn't available
-        try:
-            import serial
-            import time
-            
-            # Open serial connection
-            ser = serial.Serial(port, 115200, timeout=1)
-            
-            # Try software reset first (Ctrl+D for MicroPython soft reset)
-            ser.write(b'\x04')  # Ctrl+D for soft reset
-            time.sleep(0.1)
-            
-            # If soft reset doesn't work, try hardware reset using DTR/RTS
-            # This is the standard ESP32 reset sequence
-            ser.setDTR(False)  # IO0=HIGH (boot mode)
-            ser.setRTS(True)   # EN=LOW (reset asserted)
-            time.sleep(0.1)    # Hold reset
-            ser.setRTS(False)  # EN=HIGH (reset released)
-            time.sleep(0.1)    # Wait for boot
-            
-            ser.close()
-            print("✓ (serial reset)")
-            return True
-        except ImportError:
-            print("⚠️  pyserial not installed, cannot perform serial reset")
+                except (ValueError, IndexError) as e:
+                    print(f"⚠️  Could not parse storage info: {e}")
+                    return False
+            else:
+                print("⚠️  Could not retrieve storage info")
+                return False
+        else:
+            print("⚠️  mpremote not available")
             return False
-        except Exception as e:
-            print(f"⚠️  Serial reset failed: {e}")
-            return False
-        
-        print("⚠️  Could not restart (device may restart automatically)")
-        return False
-        
     except Exception as e:
-        print(f"⚠️  Restart failed: {e}")
+        print(f"⚠️  Error checking storage: {e}")
         return False
 
 
@@ -275,9 +250,13 @@ Examples:
   python upload_to_esp32.py
   python upload_to_esp32.py /dev/cu.usbserial-0001
   python upload_to_esp32.py COM3
+  python upload_to_esp32.py --check-storage
   python upload_to_esp32.py --monitor
   python upload_to_esp32.py --monitor --monitor-duration 30
-  python upload_to_esp32.py --skip-config --monitor
+  python upload_to_esp32.py --skip-config --monitor --check-storage
+  
+Note: The device does not automatically restart. You'll need to manually
+restart it or it will auto-run main.py on the next boot.
         """
     )
     parser.add_argument(
@@ -291,9 +270,9 @@ Examples:
         help="Skip uploading config.py (useful if you've already configured it)"
     )
     parser.add_argument(
-        "--no-restart",
+        "--check-storage",
         action="store_true",
-        help="Don't automatically restart the ESP32 after upload"
+        help="Check and display ESP32 storage usage after upload"
     )
     parser.add_argument(
         "--monitor",
@@ -375,25 +354,18 @@ Examples:
     else:
         print("✅ All files uploaded successfully!")
         
-        # Restart ESP32 if requested
-        if not args.no_restart:
-            restart_esp32(port, use_mpremote=use_mpremote)
-            print("\n📝 Device restarted! Your code should now be running.")
-            
-            # Connect to serial monitor if requested
-            if args.monitor:
-                import time
-                time.sleep(1)  # Give device a moment to boot
-                monitor_serial(port, duration=args.monitor_duration)
-        else:
-            print(f"\n📝 Next steps:")
-            print(f"  1. Restart manually or the device will auto-run main.py on boot")
-            print(f"  2. Connect to REPL: mpremote connect {port}")
-            print(f"  3. Or run main.py: mpremote connect {port} run :main.py")
-            
-            # Connect to serial monitor even without restart if requested
-            if args.monitor:
-                monitor_serial(port, duration=args.monitor_duration)
+        # Check storage usage if requested
+        if args.check_storage:
+            check_storage(port)
+        
+        print(f"\n📝 Next steps:")
+        print(f"  1. Restart manually or the device will auto-run main.py on boot")
+        print(f"  2. Connect to REPL: mpremote connect {port}")
+        print(f"  3. Or run main.py: mpremote connect {port} run :main.py")
+        
+        # Connect to serial monitor if requested
+        if args.monitor:
+            monitor_serial(port, duration=args.monitor_duration)
 
 
 if __name__ == "__main__":
