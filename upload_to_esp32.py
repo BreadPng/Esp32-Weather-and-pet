@@ -34,6 +34,9 @@ FILES_TO_UPLOAD = [
     "rotary_encoder.py",
     "config.py",
     "main.py",
+    "minigame_a.py",
+    "minigame_b.py",
+    "minigame_c.py",
 ]
 
 # Files to skip

@@ -6,6 +6,9 @@ import ssd1306
 import _thread
 from rotary_encoder import RotaryEncoder, encoder_polling_loop
 from menu import Menu
+import minigame_a
+import minigame_b
+import minigame_c
 from sprites import (
     PET_W, PET_H, MOOD_FRAMES,
     MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING,
@@ -33,6 +36,7 @@ ROTARY_BUTTON_PIN = 23
 # Menu timings (milliseconds)
 MENU_IDLE_TIMEOUT_MS = 6000
 ACTION_VIEW_DURATION_MS = 3000
+MENU_VISIBLE_COUNT = 3
 
 # Timing
 FRAME_TIME = 800  # ms per animation frame
@@ -214,12 +218,24 @@ weather_condition = None  # "Rain" or "Clear"
 manual_rain_mode = False  # Toggle rain overlay manually with button
 last_mood_change = 0
 last_weather_update = 0
+last_stat_decay = 0
 
-STATE_PET = "pet"
+STATE_IDLE = "idle"
 STATE_MENU = "menu"
-STATE_FEED = "feed"
-STATE_PLAY = "play"
-STATE_SETTINGS = "settings"
+STATE_STATS = "stats"
+STATE_MESSAGE = "message"
+STATE_MINIGAME = "minigame"
+
+STAT_KEYS = ("Energy", "Hunger", "Health")
+stats_values = {
+    "Energy": 80,
+    "Hunger": 65,
+    "Health": 75,
+}
+STAT_MIN = 0
+STAT_MAX = 100
+STAT_DECAY_INTERVAL_MS = 120000  # 2 minutes
+STAT_DECAY_AMOUNT = 1
 
 # Sensor calibration (adjust based on known accurate readings)
 TEMP_OFFSET_C = 0  # Temperature offset in Celsius
@@ -231,6 +247,35 @@ def c_to_f(celsius):
     if celsius is None:
         return None
     return celsius * 9.0 / 5.0 + 32.0
+
+
+def clamp(value, low, high):
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+
+def clamp_stat(value):
+    return clamp(value, STAT_MIN, STAT_MAX)
+
+
+def get_stat(name):
+    return clamp_stat(stats_values.get(name, 0))
+
+
+def set_stat(name, value):
+    stats_values[name] = clamp_stat(int(value))
+
+
+def adjust_stat(name, delta):
+    stats_values[name] = clamp_stat(stats_values.get(name, 0) + delta)
+
+
+def decay_stats(amount):
+    for key in STAT_KEYS:
+        stats_values[key] = clamp_stat(stats_values.get(key, 0) - amount)
 
 
 def get_time_string(show_colon=True):
@@ -322,6 +367,15 @@ def draw_rain_overlay():
                 oled.pixel(px, py, 1)
 
 
+def is_rain_mode_enabled():
+    return manual_rain_mode
+
+
+def toggle_rain_mode():
+    global manual_rain_mode
+    manual_rain_mode = not manual_rain_mode
+
+
 def render():
     """Draw the full screen: pet + temps/humidity + weather overlay"""
     oled.fill(0)
@@ -393,50 +447,97 @@ def _center_x(text):
     return max(0, (128 - len(text) * 8) // 2)
 
 
+def format_menu_label(item):
+    label = item.get("label", "")
+    item_type = item.get("type")
+    if item_type == "submenu":
+        return "%s >" % label
+    if item_type == "toggle":
+        getter = item.get("getter")
+        value = False
+        if getter:
+            try:
+                value = bool(getter())
+            except Exception as exc:
+                print("Toggle getter error:", exc)
+        return "%s: %s" % (label, "On" if value else "Off")
+    if item_type == "back":
+        return "< Back"
+    return label
+
+
 def render_menu_screen(menu):
     oled.fill(0)
-    oled.text("Menu", _center_x("Menu"), 0, 1)
-    for idx, label in enumerate(menu.items):
-        y = 18 + idx * 16
-        if idx == menu.index:
+    title = menu.title or "Menu"
+    oled.text(title, _center_x(title), 0, 1)
+    visible_items = menu.get_visible_items()
+    start_index = menu.view_offset
+
+    for idx, item in enumerate(visible_items):
+        y = 18 + idx * 14
+        label = format_menu_label(item)
+        if start_index + idx == menu.index:
             oled.fill_rect(0, y - 2, 128, 12, 1)
-            oled.text(label, 8, y, 0)
+            oled.text(label, 6, y, 0)
         else:
-            oled.text(label, 8, y, 1)
-    oled.text("Click to choose", 8, 56, 1)
+            oled.text(label, 6, y, 1)
+
+    if menu.view_offset > 0:
+        oled.text("^", 118, 8, 1)
+    if menu.view_offset + menu.visible_count < len(menu.items):
+        oled.text("v", 118, 54, 1)
+
+    oled.text("Click to select", 6, 56, 1)
     oled.show()
 
 
-def render_action_screen(title, subtitle=None):
+def render_stats_screen():
     oled.fill(0)
-    oled.text(title, _center_x(title), 20, 1)
+    #oled.text("Stats", _center_x("Stats"), 0, 1)
+
+    bar_x = 0
+    bar_width = 120
+    bar_height = 9
+    row_spacing = 18
+
+    for idx, key in enumerate(STAT_KEYS):
+        value = get_stat(key)
+        label_y = 10 + idx * row_spacing
+        bar_y = label_y + 6
+        oled.text(key, bar_x, label_y, 1)
+        oled.rect(bar_x, bar_y, bar_width, bar_height, 1)
+        filled = int((value * bar_width) // 100)
+        if filled > 0:
+            inner_width = filled - 2 if filled > 2 else filled
+            inner_width = max(1, inner_width)
+            oled.fill_rect(bar_x + 1, bar_y + 1, inner_width, bar_height - 2, 1)
+        value_str = "%3d" % value
+        oled.text(value_str, bar_x + bar_width - 24, label_y, 1)
+
+    #oled.text("Click to return", 6, 56, 1)
+    oled.show()
+
+
+def render_message_screen(title, subtitle=None):
+    oled.fill(0)
+    oled.text(title, _center_x(title), 22, 1)
     if subtitle:
-        oled.text(subtitle, _center_x(subtitle), 36, 1)
-    oled.text("Click to return", 8, 56, 1)
+        oled.text(subtitle, _center_x(subtitle), 38, 1)
+    oled.text("Click to continue", 4, 56, 1)
     oled.show()
 
 
-def render_settings_screen(menu):
+def render_minigame_banner(game_name, status):
     oled.fill(0)
-    oled.text("Settings", _center_x("Settings"), 0, 1)
-    for idx, item in enumerate(menu.items):
-        if item == "Rain Overlay":
-            label = "Rain: %s" % ("On" if manual_rain_mode else "Off")
-        else:
-            label = item
-        y = 18 + idx * 16
-        if idx == menu.index:
-            oled.fill_rect(0, y - 2, 128, 12, 1)
-            oled.text(label, 4, y, 0)
-        else:
-            oled.text(label, 4, y, 1)
-    oled.text("Click to select", 4, 56, 1)
+    oled.text(game_name, _center_x(game_name), 20, 1)
+    oled.text(status, _center_x(status), 36, 1)
     oled.show()
 
 
 def handle_feed_action():
-    global current_mood, manual_rain_mode, last_mood_change, frame_idx
-    manual_rain_mode = False
+    global current_mood, last_mood_change, frame_idx
+    adjust_stat("Hunger", 25)
+    adjust_stat("Health", 5)
     current_mood = MOOD_HAPPY
     frame_idx = 0
     last_mood_change = time.ticks_ms()
@@ -444,48 +545,137 @@ def handle_feed_action():
 
 def handle_play_action():
     global current_mood, last_mood_change, frame_idx
+    adjust_stat("Energy", -10)
+    adjust_stat("Hunger", -5)
+    adjust_stat("Health", 8)
     current_mood = MOOD_LOVE
     frame_idx = 0
     last_mood_change = time.ticks_ms()
 
 
+def handle_doctor_action():
+    global current_mood, last_mood_change, frame_idx
+    adjust_stat("Health", 25)
+    adjust_stat("Energy", 5)
+    current_mood = MOOD_POUTING
+    frame_idx = 0
+    last_mood_change = time.ticks_ms()
+
+
+# ========== MENU BUILDERS ==========
+def build_menu_structure():
+    minigames_menu = Menu(
+        "Minigames",
+        [
+            {"label": "Mini Game A", "type": "minigame", "module": minigame_a},
+            {"label": "Mini Game B", "type": "minigame", "module": minigame_b},
+            {"label": "Mini Game C", "type": "minigame", "module": minigame_c},
+            {"label": "Back", "type": "back"},
+        ],
+        visible_count=MENU_VISIBLE_COUNT,
+    )
+
+    pet_menu = Menu(
+        "Pet",
+        [
+            {"label": "Feed", "type": "action", "handler": handle_feed_action, "message": "Feeding", "subtitle": "Yum!"},
+            {"label": "Play", "type": "submenu", "submenu": minigames_menu},
+            {"label": "Doctor", "type": "action", "handler": handle_doctor_action, "message": "Doctor visit", "subtitle": "All better"},
+            {"label": "Back", "type": "back"},
+        ],
+        visible_count=MENU_VISIBLE_COUNT,
+    )
+
+    settings_menu = Menu(
+        "Settings",
+        [
+            {"label": "Rain", "type": "toggle", "toggle": toggle_rain_mode, "getter": is_rain_mode_enabled},
+            {"label": "Back", "type": "back"},
+        ],
+        visible_count=MENU_VISIBLE_COUNT,
+    )
+
+    minigames_menu.set_parent(pet_menu)
+    pet_menu.set_parent(None)
+    settings_menu.set_parent(None)
+
+    main_menu = Menu(
+        "Menu",
+        [
+            {"label": "Pet", "type": "submenu", "submenu": pet_menu},
+            {"label": "Stats", "type": "state", "state": STATE_STATS},
+            {"label": "Settings", "type": "submenu", "submenu": settings_menu},
+        ],
+        visible_count=MENU_VISIBLE_COUNT,
+    )
+
+    pet_menu.set_parent(main_menu)
+    settings_menu.set_parent(main_menu)
+
+    return main_menu
+
+
+def run_minigame(module, encoder):
+    game_name = getattr(module, "GAME_NAME", "Minigame")
+    render_minigame_banner(game_name, "Starting...")
+    time.sleep_ms(400)
+
+    try:
+        encoder.reset()
+    except AttributeError:
+        pass
+    except Exception as exc:
+        print("Encoder reset failed before game:", exc)
+
+    try:
+        module.main_loop(oled, encoder)
+    except Exception as exc:
+        print("Minigame error:", exc)
+        render_minigame_banner(game_name, "Error")
+        time.sleep_ms(1200)
+
+    try:
+        encoder.reset()
+    except AttributeError:
+        pass
+    except Exception as exc:
+        print("Encoder reset failed after game:", exc)
+
+    render_minigame_banner(game_name, "Finished")
+    time.sleep_ms(300)
+    return game_name
+
+
 # ========== MAIN LOOP ==========
 def main():
-    global frame_idx, last_mood_change, last_weather_update, manual_rain_mode
+    global frame_idx, last_mood_change, last_weather_update, manual_rain_mode, last_stat_decay
 
     oled.fill(0)
     oled.text("Tomogatchi", (64 - (10 * 4)), 24)
     oled.text("Starting!", (64 - (9 * 4)), (24 + 8 + 1))
     oled.show()
 
-    # Connect WiFi
     wifi_ok = connect_wifi()
 
     oled.fill(0)
     if wifi_ok:
         oled.text("WiFi OK", 32, 24)
-        # Sync time via NTP
         sync_time_ntp()
     else:
         oled.text("WiFi Failed", 16, 24)
     oled.show()
 
-    # Initial sensor read and weather fetch
     update_sensors()
     if wifi_ok:
         update_weather()
 
     encoder = RotaryEncoder(ROTARY_PIN_A, ROTARY_PIN_B, ROTARY_BUTTON_PIN)
-    
-    # Start encoder polling on Core 0 for responsive input
-    # Default: 5000Hz (200us polling interval) - uses microsecond sleep
-    # Supports up to ~10kHz: _thread.start_new_thread(encoder_polling_loop, (encoder, 10000))
+
     print("Starting encoder polling thread on Core 0...")
     _thread.start_new_thread(encoder_polling_loop, (encoder,))
-    time.sleep_ms(100)  # Let thread start
-    
-    main_menu = Menu(["Feed", "Play", "Settings"])
-    settings_menu = Menu(["Rain Overlay", "Back to Menu"])
+    time.sleep_ms(100)
+
+    main_menu = build_menu_structure()
 
     now = time.ticks_ms()
     last_frame_sw = now
@@ -493,18 +683,24 @@ def main():
     last_weather_update = now
     last_render = now
     last_sensor_update = now
-    current_state = STATE_PET
+    last_stat_decay = now
+
+    current_state = STATE_IDLE
     state_entered_at = now
     menu_last_interaction = now
+    menu_stack = []
+    menu_after_message = []
+    message_text = ""
+    message_subtext = None
+    message_return_state = STATE_IDLE
+    pending_minigame = None
+    minigame_return_menu_stack = []
 
     try:
         while True:
             now = time.ticks_ms()
-
-            # Encoder is updated on Core 0 - just read the accumulated results
             delta, clicked = encoder.read()
-            
-            # Log encoder direction
+
             if delta != 0:
                 direction = "CW" if delta > 0 else "CCW"
                 print("Encoder: %s (delta=%d)" % (direction, delta))
@@ -515,103 +711,154 @@ def main():
                 update_sensors()
                 last_sensor_update = now
 
-            # Change mood every X minutes
             if time.ticks_diff(now, last_mood_change) >= MOOD_CHANGE_INTERVAL:
                 change_mood()
                 last_mood_change = now
 
-            # Update weather every 10 minutes
             if wifi_ok and time.ticks_diff(now, last_weather_update) >= WEATHER_UPDATE_INTERVAL:
                 update_weather()
                 last_weather_update = now
 
-            # Advance animation frame
+            if time.ticks_diff(now, last_stat_decay) >= STAT_DECAY_INTERVAL_MS:
+                decay_stats(STAT_DECAY_AMOUNT)
+                last_stat_decay = now
+
             if time.ticks_diff(now, last_frame_sw) >= FRAME_TIME:
-                frame_idx = (frame_idx + 1) % 2  # all moods have 2 frames
+                frame_idx = (frame_idx + 1) % 2
                 last_frame_sw = now
 
-            if current_state == STATE_PET:
-                if delta or clicked:
+            if current_state == STATE_MINIGAME and pending_minigame:
+                module = pending_minigame
+                pending_minigame = None
+                menu_preserved = list(minigame_return_menu_stack)
+                game_name = run_minigame(module, encoder)
+                handle_play_action()
+                menu_stack = list(menu_preserved)
+                menu_after_message = list(menu_stack)
+                message_text = game_name
+                message_subtext = "Great game!"
+                message_return_state = STATE_MENU if menu_stack else STATE_IDLE
+                current_state = STATE_MESSAGE
+                state_entered_at = time.ticks_ms()
+                menu_last_interaction = state_entered_at
+                continue
+
+            if current_state == STATE_IDLE:
+                if clicked:
+                    main_menu.reset()
+                    main_menu.ensure_visible()
+                    menu_stack = [main_menu]
                     current_state = STATE_MENU
                     state_entered_at = now
                     menu_last_interaction = now
+                    clicked = False
+
+            elif current_state == STATE_MENU:
+                if not menu_stack:
+                    main_menu.reset()
+                    main_menu.ensure_visible()
+                    menu_stack = [main_menu]
+                current_menu = menu_stack[-1]
+                if delta:
+                    current_menu.move(delta)
+                    menu_last_interaction = now
                     delta = 0
+                if clicked:
+                    item = current_menu.selected()
+                    menu_last_interaction = now
                     clicked = False
-
-            if current_state == STATE_MENU:
-                if delta:
-                    main_menu.move(delta)
-                    menu_last_interaction = now
-                if clicked:
-                    selection = main_menu.selected()
-                    menu_last_interaction = now
-                    if selection == "Feed":
-                        handle_feed_action()
-                        current_state = STATE_FEED
-                        state_entered_at = now
-                        clicked = False
-                    elif selection == "Play":
-                        handle_play_action()
-                        current_state = STATE_PLAY
-                        state_entered_at = now
-                        clicked = False
-                    elif selection == "Settings":
-                        settings_menu.reset()
-                        current_state = STATE_SETTINGS
-                        state_entered_at = now
-                        menu_last_interaction = now
-                        clicked = False
-                if time.ticks_diff(now, menu_last_interaction) >= MENU_IDLE_TIMEOUT_MS:
-                    current_state = STATE_PET
+                    if item:
+                        item_type = item.get("type")
+                        if item_type == "submenu":
+                            submenu = item.get("submenu")
+                            if submenu:
+                                submenu.reset()
+                                submenu.set_parent(current_menu)
+                                menu_stack.append(submenu)
+                        elif item_type == "back":
+                            if len(menu_stack) > 1:
+                                menu_stack.pop()
+                                menu_stack[-1].ensure_visible()
+                            else:
+                                menu_stack = []
+                                current_state = STATE_IDLE
+                                state_entered_at = now
+                        elif item_type == "state":
+                            target_state = item.get("state")
+                            current_state = target_state or STATE_IDLE
+                            state_entered_at = now
+                            if current_state == STATE_STATS:
+                                menu_last_interaction = now
+                        elif item_type == "toggle":
+                            toggle_fn = item.get("toggle")
+                            if toggle_fn:
+                                toggle_fn()
+                        elif item_type == "minigame":
+                            module = item.get("module")
+                            if module:
+                                pending_minigame = module
+                                minigame_return_menu_stack = list(menu_stack)
+                                current_state = STATE_MINIGAME
+                                state_entered_at = now
+                        else:
+                            handler = item.get("handler")
+                            if handler:
+                                handler()
+                            message_text = item.get("message") or item.get("label", "Done")
+                            message_subtext = item.get("subtitle")
+                            menu_after_message = list(menu_stack)
+                            message_return_state = STATE_MENU if menu_after_message else STATE_IDLE
+                            current_state = STATE_MESSAGE
+                            state_entered_at = now
+                if current_state == STATE_MENU and time.ticks_diff(now, menu_last_interaction) >= MENU_IDLE_TIMEOUT_MS:
+                    menu_stack = []
+                    current_state = STATE_IDLE
                     state_entered_at = now
 
-            elif current_state == STATE_FEED:
+            elif current_state == STATE_STATS:
                 if clicked:
-                    current_state = STATE_PET
-                    state_entered_at = now
                     clicked = False
-                elif time.ticks_diff(now, state_entered_at) >= ACTION_VIEW_DURATION_MS:
-                    current_state = STATE_PET
-                    state_entered_at = now
-
-            elif current_state == STATE_PLAY:
-                if clicked:
-                    current_state = STATE_PET
-                    state_entered_at = now
-                    clicked = False
-                elif time.ticks_diff(now, state_entered_at) >= ACTION_VIEW_DURATION_MS:
-                    current_state = STATE_PET
-                    state_entered_at = now
-
-            elif current_state == STATE_SETTINGS:
-                if delta:
-                    settings_menu.move(delta)
-                    menu_last_interaction = now
-                if clicked:
-                    selection = settings_menu.selected()
-                    menu_last_interaction = now
-                    if selection == "Rain Overlay":
-                        manual_rain_mode = not manual_rain_mode
-                        clicked = False
-                    elif selection == "Back to Menu":
+                    if menu_stack:
                         current_state = STATE_MENU
-                        state_entered_at = now
-                        clicked = False
-                if time.ticks_diff(now, menu_last_interaction) >= MENU_IDLE_TIMEOUT_MS:
-                    current_state = STATE_PET
+                        menu_last_interaction = now
+                    else:
+                        current_state = STATE_IDLE
                     state_entered_at = now
+                elif delta:
+                    menu_last_interaction = now
+                if time.ticks_diff(now, menu_last_interaction) >= MENU_IDLE_TIMEOUT_MS:
+                    current_state = STATE_IDLE
+                    menu_stack = []
+                    state_entered_at = now
+
+            elif current_state == STATE_MESSAGE:
+                expired = time.ticks_diff(now, state_entered_at) >= ACTION_VIEW_DURATION_MS
+                if clicked or expired:
+                    if clicked:
+                        clicked = False
+                    if message_return_state == STATE_MENU and menu_after_message:
+                        menu_stack = list(menu_after_message)
+                        current_state = STATE_MENU
+                        menu_last_interaction = now
+                    else:
+                        menu_stack = []
+                        current_state = STATE_IDLE
+                    state_entered_at = now
+                    message_text = ""
+                    message_subtext = None
+                    menu_after_message = []
 
             if time.ticks_diff(now, last_render) >= RENDER_INTERVAL_MS:
-                if current_state == STATE_PET:
+                if current_state == STATE_IDLE:
                     render()
                 elif current_state == STATE_MENU:
-                    render_menu_screen(main_menu)
-                elif current_state == STATE_FEED:
-                    render_action_screen("Feed", "Feeding pet!")
-                elif current_state == STATE_PLAY:
-                    render_action_screen("Play", "Play time!")
-                elif current_state == STATE_SETTINGS:
-                    render_settings_screen(settings_menu)
+                    current_menu = menu_stack[-1] if menu_stack else main_menu
+                    current_menu.ensure_visible()
+                    render_menu_screen(current_menu)
+                elif current_state == STATE_STATS:
+                    render_stats_screen()
+                elif current_state == STATE_MESSAGE:
+                    render_message_screen(message_text or "Done", message_subtext)
                 last_render = now
 
     except KeyboardInterrupt:

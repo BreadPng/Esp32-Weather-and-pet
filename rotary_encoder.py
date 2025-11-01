@@ -13,7 +13,7 @@ class RotaryEncoder:
         pin_a_id,
         pin_b_id,
         button_pin_id,
-        step_debounce_ms=0,
+        step_debounce_ms=1,
         button_debounce_ms=35,
         delta_cap=1,
     ):
