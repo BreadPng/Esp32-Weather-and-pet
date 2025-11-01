@@ -12,3 +12,8 @@ OPENWEATHER_LON = 0.0  # Your longitude
 # Hours offset from UTC 
 TIMEZONE_OFFSET = -7  # Your timezone offset from UTC
 
+# Rotary Encoder Configuration
+# Set to True to use hardware-based rotary encoder (rotary_irq_esp - requires micropython-rotary library)
+# Set to False to use polling-based rotary encoder (rotary_encoder.py)
+USE_HARDWARE_ENCODER = False  # Change to True after installing: mip.install("github:miketeachman/micropython-rotary")
+

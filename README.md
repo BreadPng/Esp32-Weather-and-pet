@@ -9,6 +9,7 @@ A virtual pet that displays different moods based on time, shows indoor temperat
 - Elegoo ESP32 Development Board (CP2102, USB-C)
 - HTU21D I2C Temperature/Humidity Sensor
 - SSD1306 128×64 I2C OLED display
+- Rotary Encoder with push button (optional, for menu navigation)
 
 ### Wiring
 
@@ -24,7 +25,14 @@ A virtual pet that displays different moods based on time, shows indoor temperat
 - `SDA` → ESP32 `GPIO21` (shared with OLED)
 - `SCL` → ESP32 `GPIO22` (shared with OLED)
 
-Both devices share the same I2C bus (GPIO21/22).
+#### Rotary Encoder (Optional)
+- `CLK` (A) → ESP32 `GPIO18`
+- `DT` (B) → ESP32 `GPIO19`
+- `SW` (Button) → ESP32 `GPIO23`
+- `+` → ESP32 `3V3`
+- `GND` → ESP32 `GND`
+
+Both I2C devices share the same bus (GPIO21/22).
 
 ## Software Setup
 
@@ -89,7 +97,34 @@ mpremote connect /dev/cu.usbserial-0001 run :main.py
 - **`main.py`**: Main loop, WiFi, sensors, OpenWeather, rendering
 - **`sprites.py`**: 5 moods × 2 frames (64×64 ASCII art)
 - **`ssd1306.py`**: I2C OLED driver
-- **`upload_via_paste.py`**: Upload script (uses paste mode, not raw REPL)
+- **`config.py`**: WiFi, API keys, and hardware configuration
+- **`menu.py`**: Menu system for navigation
+- **`rotary_encoder.py`**: Polling-based rotary encoder (default)
+- **`rotary_encoder_irq.py`**: Hardware-based rotary encoder (ESP32 PCNT)
+- **`minigame_*.py`**: Mini-games accessible via menu
+- **`upload_to_esp32.py`**: Upload script for deploying to ESP32
+
+## Rotary Encoder Configuration
+
+Two encoder implementations available (switch via `USE_HARDWARE_ENCODER` in `config.py`):
+
+### Polling Encoder (Default)
+- File: `rotary_encoder.py`
+- No setup required
+- Works immediately
+
+### Hardware Encoder (Recommended)
+- File: `rotary_encoder_irq.py`
+- Uses ESP32 PCNT hardware (lower CPU, more reliable)
+- Setup:
+  ```bash
+  # Install library (one-time)
+  mpremote mip install github:miketeachman/micropython-rotary
+  ```
+  ```python
+  # In config.py
+  USE_HARDWARE_ENCODER = True
+  ```
 
 ## Customization
 

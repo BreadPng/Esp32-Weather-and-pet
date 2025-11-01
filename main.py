@@ -4,7 +4,6 @@ import network
 import urequests
 import ssd1306
 import _thread
-from rotary_encoder import RotaryEncoder, encoder_polling_loop
 from menu import Menu
 import minigame_a
 import minigame_b
@@ -18,8 +17,26 @@ from sprites import (
 from config import (
     WIFI_SSID, WIFI_PASSWORD,
     OPENWEATHER_API_KEY, OPENWEATHER_LAT, OPENWEATHER_LON,
-    TIMEZONE_OFFSET
+    TIMEZONE_OFFSET,
+    USE_HARDWARE_ENCODER
 )
+
+# Import appropriate rotary encoder implementation
+# Switch between implementations in config.py with USE_HARDWARE_ENCODER flag
+# - False (default): rotary_encoder.py - polling-based, no dependencies
+# - True: rotary_encoder_irq.py - ESP32 PCNT hardware, requires: mip.install("github:miketeachman/micropython-rotary")
+if USE_HARDWARE_ENCODER:
+    try:
+        print("Using hardware-based rotary encoder (ESP32 PCNT)")
+        from rotary_encoder_irq import RotaryEncoderIRQ as RotaryEncoder, encoder_polling_loop
+    except ImportError as e:
+        print("WARNING: Hardware encoder library not found!")
+        print("Install with: mip.install('github:miketeachman/micropython-rotary')")
+        print("Falling back to polling encoder...")
+        from rotary_encoder import RotaryEncoder, encoder_polling_loop
+else:
+    print("Using polling-based rotary encoder")
+    from rotary_encoder import RotaryEncoder, encoder_polling_loop
 
 # ========== CONFIGURATION ==========
 

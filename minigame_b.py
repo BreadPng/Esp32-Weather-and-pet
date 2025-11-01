@@ -31,7 +31,7 @@ def main_loop(oled, encoder):
     oled.text("10.000", _center_text("10.000"), 25, 1)
     oled.text("seconds!", _center_text("seconds!"), 40, 1)
     oled.show()
-    time.sleep_ms(2000)
+    time.sleep_ms(1000)
     
     # Countdown before starting
     # for countdown in [3, 2, 1]:
@@ -101,7 +101,7 @@ def main_loop(oled, encoder):
     # 1000+ ms off = way off (0 decimal places correct)
     
     if difference_ms == 0:
-        score_text = "PERFECT!!!"
+        score_text = "WOOOHOOO!"
         accuracy = "0.000s off"
     elif difference_ms < 10:
         score_text = "Amazing!"
