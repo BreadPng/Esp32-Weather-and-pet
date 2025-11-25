@@ -36,6 +36,7 @@ FILES_TO_UPLOAD = [
     "minigame_a.py",
     "minigame_b.py",
     "minigame_c.py",
+    
 ]
 
 # Files to skip
@@ -185,14 +186,14 @@ def monitor_serial(port, duration=None):
             ser.close()
             
     except ImportError:
-        print("❌ pyserial not installed. Install it with: pip install pyserial")
+        print("pyserial not installed. Install it with: pip install pyserial")
         return False
     except serial.SerialException as e:
-        print(f"❌ Could not open serial port: {e}")
+        print(f"Could not open serial port: {e}")
         print("The device might be in use by another program.")
         return False
     except Exception as e:
-        print(f"❌ Error monitoring serial: {e}")
+        print(f"Error monitoring serial: {e}")
         return False
     
     return True
@@ -200,7 +201,7 @@ def monitor_serial(port, duration=None):
 
 def check_storage(port):
     """Check ESP32 filesystem storage usage."""
-    print("\n💾 Checking storage...", end=" ", flush=True)
+    print("\nChecking storage...", end=" ", flush=True)
     
     try:
         if check_command("mpremote"):

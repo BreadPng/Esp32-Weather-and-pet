@@ -17,7 +17,7 @@ worktrees.json
 *.swp
 *.swo
 *~
-
+.EncoderPackage/
 # OS files
 .DS_Store
 Thumbs.db

@@ -13,6 +13,7 @@ from sprites import (
     MOOD_HAPPY, MOOD_SAD, MOOD_BORED, MOOD_LOVE, MOOD_POUTING,
     ICON_W, ICON_H, HOUSE_ICON, SUN_ICON
 )
+import machine
 # Import sensitive configuration from separate file
 from config import (
     WIFI_SSID, WIFI_PASSWORD,
@@ -25,10 +26,102 @@ from config import (
 # Switch between implementations in config.py with USE_HARDWARE_ENCODER flag
 # - False (default): rotary_encoder.py - polling-based, no dependencies
 # - True: rotary_encoder_irq.py - ESP32 PCNT hardware, requires: mip.install("github:miketeachman/micropython-rotary")
+time.sleep(1)
 if USE_HARDWARE_ENCODER:
     try:
         print("Using hardware-based rotary encoder (ESP32 PCNT)")
-        from rotary_encoder_irq import RotaryEncoderIRQ as RotaryEncoder, encoder_polling_loop
+        # Import directly from the library module placed on the device
+        from rotary_irq_esp import RotaryIRQ
+        # Adapter to match the polling encoder API (read/reset)
+        class RotaryEncoder:
+            def __init__(
+                self,
+                pin_a_id,
+                pin_b_id,
+                button_pin_id,
+                step_debounce_ms=1,
+                button_debounce_ms=35,
+                delta_cap=1,
+            ):
+                # Hardware rotary (unbounded range)
+                self.rotary = RotaryIRQ(
+                    pin_num_clk=pin_a_id,
+                    pin_num_dt=pin_b_id,
+                    min_val=0,
+                    max_val=1000000,
+                    reverse=False,
+                    range_mode=RotaryIRQ.RANGE_UNBOUNDED,
+                    pull_up=True,
+                )
+                # Button (active-low)
+                self.button = Pin(button_pin_id, Pin.IN, Pin.PULL_UP)
+                self._button_debounce_ms = button_debounce_ms
+                self._delta_cap = delta_cap
+                self._button_clicked = False
+                self._button_press_time = None
+                # Attach IRQ for button clicks
+                self.button.irq(
+                    trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING,
+                    handler=self._button_irq,
+                )
+                # Track last value for delta computation
+                initial_value = self.rotary.value()
+                self._last_value = initial_value if initial_value is not None else 0
+            
+            def _button_irq(self, pin):
+                import time as _t
+                current = pin.value()
+                now = _t.ticks_ms()
+                if current == 0:
+                    self._button_press_time = now
+                else:
+                    if self._button_press_time is not None:
+                        if _t.ticks_diff(now, self._button_press_time) >= self._button_debounce_ms:
+                            self._button_clicked = True
+                    self._button_press_time = None
+            
+            def update(self):
+                # Hardware counts pulses; nothing to do here
+                pass
+            
+            def read(self):
+                current_value = self.rotary.value()
+                if current_value is None:
+                    current_value = 0
+                if self._last_value is None:
+                    self._last_value = current_value
+                delta = current_value - self._last_value
+                self._last_value = current_value
+                # Cap delta to ±delta_cap
+                if delta > self._delta_cap:
+                    delta = self._delta_cap
+                elif delta < -self._delta_cap:
+                    delta = -self._delta_cap
+                clicked = self._button_clicked
+                self._button_clicked = False
+                return delta, clicked
+            
+            def reset(self):
+                try:
+                    # RotaryIRQ.reset() resets to min_val
+                    self.rotary.reset()
+                except Exception:
+                    try:
+                        self.rotary.set(value=0)
+                    except Exception:
+                        pass
+                v = self.rotary.value()
+                self._last_value = v if v is not None else 0
+                self._button_clicked = False
+                self._button_press_time = None
+        
+        # Provide a no-op polling loop for API compatibility
+        def encoder_polling_loop(encoder, poll_frequency_hz=1000):
+            import time
+            poll_interval_ms = int(1000 / poll_frequency_hz)
+            print("Encoder polling thread started (hardware PCNT mode) - %dHz" % poll_frequency_hz)
+            while True:
+                time.sleep_ms(poll_interval_ms)
     except ImportError as e:
         print("WARNING: Hardware encoder library not found!")
         print("Install with: mip.install('github:miketeachman/micropython-rotary')")
@@ -494,7 +587,7 @@ def render_menu_screen(menu):
         y = 18 + idx * 14
         label = format_menu_label(item)
         if start_index + idx == menu.index:
-            oled.fill_rect(0, y - 2, 128, 12, 1)
+            oled.fill_rect(0, y - 2, 126, 12, 1)
             oled.text(label, 6, y, 0)
         else:
             oled.text(label, 6, y, 1)
@@ -579,14 +672,24 @@ def handle_doctor_action():
     last_mood_change = time.ticks_ms()
 
 
+# Device/system actions
+def handle_soft_reset():
+    try:
+        print("Soft reset requested - rebooting device...")
+        time.sleep_ms(200)
+    except Exception:
+        pass
+    machine.reset()
+
+
 # ========== MENU BUILDERS ==========
 def build_menu_structure():
     minigames_menu = Menu(
         "Minigames",
         [
-            {"label": "Mini Game A", "type": "minigame", "module": minigame_a},
-            {"label": "Mini Game B", "type": "minigame", "module": minigame_b},
-            {"label": "Mini Game C", "type": "minigame", "module": minigame_c},
+            {"label": "React Time", "type": "minigame", "module": minigame_a},
+            {"label": "Count 2 10", "type": "minigame", "module": minigame_b},
+            {"label": "Spin", "type": "minigame", "module": minigame_c},
             {"label": "Back", "type": "back"},
         ],
         visible_count=MENU_VISIBLE_COUNT,
@@ -607,6 +710,7 @@ def build_menu_structure():
         "Settings",
         [
             {"label": "Rain", "type": "toggle", "toggle": toggle_rain_mode, "getter": is_rain_mode_enabled},
+            {"label": "Soft Reset", "type": "action", "handler": handle_soft_reset, "message": "Rebooting", "subtitle": "See you soon!"},
             {"label": "Back", "type": "back"},
         ],
         visible_count=MENU_VISIBLE_COUNT,
@@ -672,6 +776,24 @@ def main():
     oled.text("Starting!", (64 - (9 * 4)), (24 + 8 + 1))
     oled.show()
 
+    # Ensure any saved STA credentials are cleared before attempting fresh connect
+    try:
+        sta = network.WLAN(network.STA_IF)
+        sta.active(True)
+        try:
+            sta.disconnect()
+        except Exception:
+            pass
+        # On newer MicroPython builds, this limits auto-retries which can keep old creds alive
+        try:
+            sta.config(reconnects=0)
+        except Exception:
+            pass
+        time.sleep_ms(50)
+        print("Cleared WiFi STA state at boot.")
+    except Exception as e:
+        print("WiFi clear failed:", e)
+
     wifi_ok = connect_wifi()
 
     oled.fill(0)
@@ -690,7 +812,7 @@ def main():
 
     print("Starting encoder polling thread on Core 0...")
     _thread.start_new_thread(encoder_polling_loop, (encoder,))
-    time.sleep_ms(100)
+    time.sleep_ms(30)
 
     main_menu = build_menu_structure()
 
